@@ -1,4 +1,3 @@
-
 #include <Arduino.h>
 #include <HX711.h>
 #include <BLEDevice.h>
@@ -8,20 +7,23 @@
 #define DOUT 20
 #define SCK 21
 
-
-
-HX711 scale;
-const float calibration_factor = 420.0; // 보정값, 테스트를 통해 교정
-
 // BLE 설정
 #define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
 #define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
+#define WRITE_CHARACTERISTIC_UUID "abcdef02-1234-5678-1234-56789abcdef0" // 쓰기용 UUID
+
+int retryCount = 0; // HX711 연결 재시도 카운트
+
+HX711 scale;
+float calibration_factor = 420.0; // 초기 보정값
 
 BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristic = NULL;
+BLECharacteristic* pWriteCharacteristic = NULL;
 bool deviceConnected = false;
+bool measureWeight = false; // 무게 측정 논리
 
-// 서버 콜백 클래스
+// BLE 서버 콜백 클래스
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
@@ -34,17 +36,26 @@ class MyServerCallbacks : public BLEServerCallbacks {
     }
 };
 
-
+// BLE 쓰기 요청 처리 콜백 클래스
+class WriteCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value == "measure") { // "measure" 명령 수신
+            measureWeight = true;
+            Serial.println("📥 '무게 측정' 명령 수신!");
+        }
+    }
+};
 
 void setup() {
     Serial.begin(115200);
     scale.begin(DOUT, SCK);
 
     Serial.println("🔵 HX711 로드셀 시작 중...");
-
-    while (!scale.is_ready()) {
+    while (!scale.is_ready() && retryCount < 10) {
         Serial.println("❌ HX711 연결 실패. 배선 확인 필요!");
         delay(1000);
+        retryCount++;
     }
 
     scale.set_scale(calibration_factor);
@@ -53,17 +64,26 @@ void setup() {
 
     // BLE 초기화
     BLEDevice::init("ESP32-S3 BLE Scale");
+
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
     BLEService* pService = pServer->createService(SERVICE_UUID);
-    pCharacteristic = pService->createCharacteristic(
-                        CHARACTERISTIC_UUID,
-                        BLECharacteristic::PROPERTY_READ   | 
-                        BLECharacteristic::PROPERTY_NOTIFY
-                      );
 
+    // 읽기 및 알림용 특성
+    pCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
     pCharacteristic->setValue("0.0");
+
+    // 쓰기용 특성
+    pWriteCharacteristic = pService->createCharacteristic(
+        WRITE_CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_WRITE
+    );
+    pWriteCharacteristic->setCallbacks(new WriteCallbacks()); // 쓰기 요청 처리 콜백 설정
+
     pService->start();
 
     // BLE 광고 시작
@@ -78,19 +98,19 @@ void setup() {
 }
 
 void loop() {
-    if (deviceConnected) {
+    if (deviceConnected && measureWeight) {
         float weight = scale.get_units(10); // 10회 평균 측정
         Serial.print("무게 (g): ");
         Serial.println(weight, 2);
 
-        String weightStr = String(weight, 2);
-        pCharacteristic->setValue(weightStr.c_str());
+        pCharacteristic->setValue((uint8_t*)&weight, sizeof(weight));
         pCharacteristic->notify();  // BLE Notify로 데이터 전송
-        Serial.println("📤 BLE 전송: " + weightStr);
-    } else {
+
+        Serial.println("📤 BLE 전송 완료!");
+        measureWeight = false; // 측정 완료 후 플래그 초기화
+    } else if (!deviceConnected) {
         Serial.println("⏳ BLE 클라이언트 연결 대기 중...");
     }
 
-    delay(1000); // 데이터 측정 주기
+    delay(100); // 짧은 대기
 }
-
