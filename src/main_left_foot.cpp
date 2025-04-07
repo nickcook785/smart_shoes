@@ -27,13 +27,17 @@ bool measureWeight = false; // 무게 측정 논리
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
-        Serial.println("✅ BLE 클라이언트 연결됨!");
+        Serial.println("✅ BLE 왼쪽 클라이언트 연결됨!");
     }
 
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
-        Serial.println("🔄 BLE 클라이언트 연결 끊김. 대기 중...");
+        Serial.println("🔄 BLE 왼쪽 클라이언트 연결 끊김. 대기 중...");
+        BLEDevice::startAdvertising(); // 재광고 시작
+        Serial1.println("🔄 BLE 왼쪽 클라이언트 연결 끊김. 대기 중...");
     }
+
+
 };
 
 // BLE 쓰기 요청 처리 콜백 클래스
@@ -42,10 +46,11 @@ class WriteCallbacks : public BLECharacteristicCallbacks {
         std::string value = pCharacteristic->getValue();
         if (value == "measure") { // "measure" 명령 수신
             measureWeight = true;
-            Serial.println("📥 '무게 측정' 명령 수신!");
+            Serial.println("📥 '왼쪽 무게 측정' 명령 수신!");
         }
     }
 };
+
 
 void setup() {
     Serial.begin(115200);
@@ -94,10 +99,23 @@ void setup() {
     pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
 
-    Serial.println("📡 BLE 서버 시작 완료!");
+    Serial.println("📡 BLE 왼쪽 서버 시작 완료!");
 }
 
 void loop() {
+    static bool lastcoonect = false; // 마지막 연결 상태 저장
+    
+    /*
+    if(deviceConnected != lastcoonect) {
+        if (deviceConnected) {
+            Serial.println("✅ BLE 왼쪽 클라이언트 연결됨!");
+        } else {
+            Serial.println("🔄 BLE 왼쪽 클라이언트 연결 끊김. 대기 중...");
+        }
+        lastcoonect = deviceConnected;
+    }
+    */
+
     if (deviceConnected && measureWeight) {
         float weight = scale.get_units(10); // 10회 평균 측정
         Serial.print("무게 (g): ");
@@ -106,11 +124,8 @@ void loop() {
         pCharacteristic->setValue((uint8_t*)&weight, sizeof(weight));
         pCharacteristic->notify();  // BLE Notify로 데이터 전송
 
-        Serial.println("📤 BLE 전송 완료!");
+        Serial.println("📤 BLE 왼쪽전송 완료!");
         measureWeight = false; // 측정 완료 후 플래그 초기화
-    } else if (!deviceConnected) {
-        Serial.println("⏳ BLE 클라이언트 연결 대기 중...");
+    } 
+     delay(100); // 짧은 대기
     }
-
-    delay(100); // 짧은 대기
-}
