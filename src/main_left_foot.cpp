@@ -1,29 +1,41 @@
 #include <Arduino.h>
-#include <HX711.h>
+#include "global.h"
+#include "HX711.h"
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include "esp_sleep.h"  // 💡 Deep Sleep용 라이브러리 추가
 
 #define DOUT 20
 #define SCK 21
-
-// BLE 설정
-#define SERVICE_UUID        "12345678-1234-5678-1234-56789abcdef0"
-#define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
-#define WRITE_CHARACTERISTIC_UUID "abcdef02-1234-5678-1234-56789abcdef0" // 쓰기용 UUID
-
-int retryCount = 0; // HX711 연결 재시도 카운트
+#define THRESHOLD 5.0  // 💡 무게 임계값
+#define uS_TO_S_FACTOR 1000000ULL
+#define SLEEP_DURATION 30  // 💡 Deep Sleep 지속 시간 (초)
 
 HX711 scale;
-float calibration_factor = 420.0; // 초기 보정값
 
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
-BLECharacteristic* pWriteCharacteristic = NULL;
+float calibration_factor = 420.0;
+int retryCount = 0;
 bool deviceConnected = false;
-bool measureWeight = false; // 무게 측정 논리
+bool measureWeight = false;
 
-// BLE 서버 콜백 클래스
+BLEServer* pServer = nullptr;
+BLECharacteristic* pCharacteristic = nullptr;
+BLECharacteristic* pWriteCharacteristic = nullptr;
+
+#define SERVICE_UUID "12345678-1234-5678-1234-56789abcdef0"
+#define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
+#define WRITE_CHARACTERISTIC_UUID "abcdef02-1234-5678-1234-56789abcdef0"
+
+// 💡 Deep Sleep 함수 정의
+void enterDeepSleep() {
+    Serial.println("💤 무게 없음! Deep Sleep 모드 진입...");
+    esp_sleep_enable_timer_wakeup(SLEEP_DURATION * uS_TO_S_FACTOR);
+    Serial.flush(); // 시리얼 데이터 전송 마무리
+    esp_deep_sleep_start();
+}
+
+// BLE 연결 콜백
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
@@ -33,24 +45,20 @@ class MyServerCallbacks : public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
         Serial.println("🔄 BLE 왼쪽 클라이언트 연결 끊김. 대기 중...");
-        BLEDevice::startAdvertising(); // 재광고 시작
-        Serial1.println("🔄 BLE 왼쪽 클라이언트 연결 끊김. 대기 중...");
+        BLEDevice::startAdvertising();
     }
-
-
 };
 
-// BLE 쓰기 요청 처리 콜백 클래스
+// BLE 쓰기 콜백
 class WriteCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
         std::string value = pCharacteristic->getValue();
-        if (value == "measure") { // "measure" 명령 수신
+        if (value == "measure") {
             measureWeight = true;
             Serial.println("📥 '왼쪽 무게 측정' 명령 수신!");
         }
     }
 };
-
 
 void setup() {
     Serial.begin(115200);
@@ -67,7 +75,6 @@ void setup() {
     scale.tare();
     Serial.println("✅ 초기화 완료!");
 
-    // BLE 초기화
     BLEDevice::init("ESP32-S3 BLE Scale");
 
     pServer = BLEDevice::createServer();
@@ -75,23 +82,20 @@ void setup() {
 
     BLEService* pService = pServer->createService(SERVICE_UUID);
 
-    // 읽기 및 알림용 특성
     pCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID,
         BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
     );
     pCharacteristic->setValue("0.0");
 
-    // 쓰기용 특성
     pWriteCharacteristic = pService->createCharacteristic(
         WRITE_CHARACTERISTIC_UUID,
         BLECharacteristic::PROPERTY_WRITE
     );
-    pWriteCharacteristic->setCallbacks(new WriteCallbacks()); // 쓰기 요청 처리 콜백 설정
+    pWriteCharacteristic->setCallbacks(new WriteCallbacks());
 
     pService->start();
 
-    // BLE 광고 시작
     BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICE_UUID);
     pAdvertising->setScanResponse(true);
@@ -103,29 +107,22 @@ void setup() {
 }
 
 void loop() {
-    static bool lastcoonect = false; // 마지막 연결 상태 저장
-    
-    /*
-    if(deviceConnected != lastcoonect) {
-        if (deviceConnected) {
-            Serial.println("✅ BLE 왼쪽 클라이언트 연결됨!");
-        } else {
-            Serial.println("🔄 BLE 왼쪽 클라이언트 연결 끊김. 대기 중...");
-        }
-        lastcoonect = deviceConnected;
-    }
-    */
-
     if (deviceConnected && measureWeight) {
-        float weight = scale.get_units(10); // 10회 평균 측정
+        float weight = scale.get_units(10);
         Serial.print("무게 (g): ");
         Serial.println(weight, 2);
 
         pCharacteristic->setValue((uint8_t*)&weight, sizeof(weight));
-        pCharacteristic->notify();  // BLE Notify로 데이터 전송
+        pCharacteristic->notify();
+        Serial.println("📤 BLE 왼쪽 전송 완료!");
 
-        Serial.println("📤 BLE 왼쪽전송 완료!");
-        measureWeight = false; // 측정 완료 후 플래그 초기화
-    } 
-     delay(100); // 짧은 대기
+        // 💡 무게가 임계값보다 작으면 슬립
+        if (abs(weight) < THRESHOLD) {
+            enterDeepSleep();
+        }
+
+        measureWeight = false;
     }
+
+    delay(100);
+}
