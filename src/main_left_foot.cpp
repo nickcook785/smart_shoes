@@ -10,7 +10,7 @@
 #define SCK 21
 #define THRESHOLD 5.0  // 💡 무게 임계값
 #define uS_TO_S_FACTOR 1000000ULL
-#define SLEEP_DURATION 30  // 💡 Deep Sleep 지속 시간 (초)
+#define SLEEP_DURATION 300  // 💡 Deep Sleep 지속 시간 (초)
 
 HX711 scale;
 
@@ -27,13 +27,13 @@ BLECharacteristic* pWriteCharacteristic = nullptr;
 #define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
 #define WRITE_CHARACTERISTIC_UUID "abcdef02-1234-5678-1234-56789abcdef0"
 
-// 💡 Deep Sleep 함수 정의
-void enterDeepSleep() {
-    Serial.println("💤 무게 없음! Deep Sleep 모드 진입...");
-    esp_sleep_enable_timer_wakeup(SLEEP_DURATION * uS_TO_S_FACTOR);
-    Serial.flush(); // 시리얼 데이터 전송 마무리
-    esp_deep_sleep_start();
+void enterLightSleep(uint64_t sleepTimeMs) {
+    Serial.println("😴 Light Sleep 모드 진입...");
+    esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);  // 밀리초 → 마이크로초
+    esp_light_sleep_start();  // 💤 BLE는 유지하면서 슬립
+    Serial.println("🌞 깨어났습니다!");
 }
+
 
 // BLE 연결 콜백
 class MyServerCallbacks : public BLEServerCallbacks {
@@ -115,12 +115,13 @@ void loop() {
         pCharacteristic->setValue((uint8_t*)&weight, sizeof(weight));
         pCharacteristic->notify();
         Serial.println("📤 BLE 왼쪽 전송 완료!");
-
+/*
         // 💡 무게가 임계값보다 작으면 슬립
         if (abs(weight) < THRESHOLD) {
-            enterDeepSleep();
+            delay(1000);  // 1초 대기 후 슬립
+            enterLightSleep(10000);  // 10초 동안 슬립
         }
-
+*/
         measureWeight = false;
     }
 
