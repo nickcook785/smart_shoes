@@ -1,18 +1,22 @@
 #include <Arduino.h>
 #include "global.h"
-#include "HX711.h"
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
-#include "esp_sleep.h"  // 💡 Deep Sleep용 라이브러리 추가
+#include "esp_sleep.h"
+#include "HX711.h"  // 로드셀 사용 중이므로 다시 추가
 
 #define DOUT 20
 #define SCK 21
-#define THRESHOLD 5.0  // 💡 무게 임계값
+#define THRESHOLD 5.0
 #define uS_TO_S_FACTOR 1000000ULL
-#define SLEEP_DURATION 300  // 💡 Deep Sleep 지속 시간 (초)
+#define SLEEP_DURATION 300
 
 HX711 scale;
+Adafruit_MPU6050 mpu;
 
 float calibration_factor = 420.0;
 int retryCount = 0;
@@ -29,13 +33,11 @@ BLECharacteristic* pWriteCharacteristic = nullptr;
 
 void enterLightSleep(uint64_t sleepTimeMs) {
     Serial.println("😴 Light Sleep 모드 진입...");
-    esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);  // 밀리초 → 마이크로초
-    esp_light_sleep_start();  // 💤 BLE는 유지하면서 슬립
+    esp_sleep_enable_timer_wakeup(sleepTimeMs * 1000);
+    esp_light_sleep_start();
     Serial.println("🌞 깨어났습니다!");
 }
 
-
-// BLE 연결 콜백
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
@@ -49,7 +51,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
     }
 };
 
-// BLE 쓰기 콜백
 class WriteCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
         std::string value = pCharacteristic->getValue();
@@ -60,23 +61,44 @@ class WriteCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
+// ✅ 자세 평가 함수 (예: pitch가 너무 기울어졌는지)
+bool evaluatePosture(float weight, float pitch) {
+    if (abs(weight) < 5.0) return false;
+    return pitch > -10 && pitch < 10;
+}
+
+// ✅ pitch 각도 계산 함수
+float getPitchAngle() {
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+
+    float ax = a.acceleration.x;
+    float ay = a.acceleration.y;
+    float az = a.acceleration.z;
+
+    float pitch = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+    return pitch;
+}
+
 void setup() {
     Serial.begin(115200);
+    delay(1000);  // 센서 초기화 기다림
+
+    // ✅ 로드셀 초기화
     scale.begin(DOUT, SCK);
-
-    Serial.println("🔵 HX711 로드셀 시작 중...");
-    while (!scale.is_ready() && retryCount < 10) {
-        Serial.println("❌ HX711 연결 실패. 배선 확인 필요!");
-        delay(1000);
-        retryCount++;
-    }
-
     scale.set_scale(calibration_factor);
     scale.tare();
-    Serial.println("✅ 초기화 완료!");
+    Serial.println("✅ HX711 초기화 완료!");
 
+    // ✅ MPU6050 초기화
+    if (!mpu.begin()) {
+        Serial.println("❌ MPU6050 연결 실패!");
+        while (1) delay(10);
+    }
+    Serial.println("✅ MPU6050 초기화 완료!");
+
+    // ✅ BLE 초기화
     BLEDevice::init("ESP32-S3 BLE Scale");
-
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
 
@@ -109,19 +131,20 @@ void setup() {
 void loop() {
     if (deviceConnected && measureWeight) {
         float weight = scale.get_units(10);
-        Serial.print("무게 (g): ");
-        Serial.println(weight, 2);
+        float pitch = getPitchAngle();
+        bool posture = evaluatePosture(weight, pitch);
 
-        pCharacteristic->setValue((uint8_t*)&weight, sizeof(weight));
+        Serial.print("무게 (g): ");
+        Serial.print(weight, 2);
+        Serial.print(" | Pitch: ");
+        Serial.print(pitch, 2);
+        Serial.print(" | 자세: ");
+        Serial.println(posture ? "GOOD" : "BAD");
+
+        String sendData = String(weight, 2) + "," + String(pitch, 2) + "," + (posture ? "GOOD" : "BAD");
+        pCharacteristic->setValue(sendData.c_str());
         pCharacteristic->notify();
-        Serial.println("📤 BLE 왼쪽 전송 완료!");
-/*
-        // 💡 무게가 임계값보다 작으면 슬립
-        if (abs(weight) < THRESHOLD) {
-            delay(1000);  // 1초 대기 후 슬립
-            enterLightSleep(10000);  // 10초 동안 슬립
-        }
-*/
+
         measureWeight = false;
     }
 
