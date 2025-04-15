@@ -38,6 +38,26 @@ void enterLightSleep(uint64_t sleepTimeMs) {
     Serial.println("🌞 깨어났습니다!");
 }
 
+// ✅ 자세 평가 함수 (예: pitch가 너무 기울어졌는지)
+bool evaluatePosture(float weight, float pitch) {
+    if (abs(weight) < 5.0) return false;
+    return pitch > -10 && pitch < 10;
+}
+
+// ✅ pitch 각도 계산 함수
+float getPitchAngle() {
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+
+    float ax = a.acceleration.x;
+    float ay = a.acceleration.y;
+    float az = a.acceleration.z;
+
+    float pitch = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+    return pitch;
+}
+
+
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
@@ -61,24 +81,6 @@ class WriteCallbacks : public BLECharacteristicCallbacks {
     }
 };
 
-// ✅ 자세 평가 함수 (예: pitch가 너무 기울어졌는지)
-bool evaluatePosture(float weight, float pitch) {
-    if (abs(weight) < 5.0) return false;
-    return pitch > -10 && pitch < 10;
-}
-
-// ✅ pitch 각도 계산 함수
-float getPitchAngle() {
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
-
-    float ax = a.acceleration.x;
-    float ay = a.acceleration.y;
-    float az = a.acceleration.z;
-
-    float pitch = atan2(ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
-    return pitch;
-}
 
 void setup() {
     Serial.begin(115200);
@@ -93,7 +95,7 @@ void setup() {
     // ✅ MPU6050 초기화
     if (!mpu.begin()) {
         Serial.println("❌ MPU6050 연결 실패!");
-        while (1) delay(10);
+        delay(10);
     }
     Serial.println("✅ MPU6050 초기화 완료!");
 
@@ -129,24 +131,27 @@ void setup() {
 }
 
 void loop() {
-    if (deviceConnected && measureWeight) {
-        float weight = scale.get_units(10);
-        float pitch = getPitchAngle();
-        bool posture = evaluatePosture(weight, pitch);
+    if (deviceConnected) {
+        // 무게와 자세 데이터를 지속적으로 측정
+        float weight = scale.get_units(10); // 로드셀 데이터 (10회 평균)
+        float pitch = getPitchAngle();      // MPU6050에서 pitch 각도 계산
+        bool posture = evaluatePosture(weight, pitch); // 자세 평가
 
+        // 데이터 출력
         Serial.print("무게 (g): ");
         Serial.print(weight, 2);
         Serial.print(" | Pitch: ");
         Serial.print(pitch, 2);
         Serial.print(" | 자세: ");
         Serial.println(posture ? "GOOD" : "BAD");
+        delay(100); // 데이터 출력 주기 (100ms)
 
+        // BLE 특성에 데이터 설정 및 알림 전송
         String sendData = String(weight, 2) + "," + String(pitch, 2) + "," + (posture ? "GOOD" : "BAD");
         pCharacteristic->setValue(sendData.c_str());
         pCharacteristic->notify();
 
-        measureWeight = false;
+        delay(100); // 데이터 전송 주기 (100ms)
+    } 
     }
 
-    delay(100);
-}
